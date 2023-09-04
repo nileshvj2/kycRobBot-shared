@@ -1,0 +1,549 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Q&A against a SQL Database"
+      ],
+      "metadata": {},
+      "id": "66ab3cc5-aee4-415a-9391-1e5d37ccaf1d"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Now that we know (from the prior Notebook) how to query tabular data on a CSV file, let's try now to keep the data at is source and ask questions directly to a SQL Database.\n",
+        "The goal of this notebook is to demonstrate how a LLM so advanced as GPT-4 can understand a human question and translate that into a SQL query to get the answer. \n",
+        "\n",
+        "We will be using the Azure SQL Server that you created on the initial deployment. The server should be created on the Resource Group where the Azure Cognitive Search service is located.\n",
+        "\n",
+        "Let's begin.."
+      ],
+      "metadata": {},
+      "id": "306fc0a9-4044-441d-9ba7-f54f32e6ea9f"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import os\n",
+        "import pandas as pd\n",
+        "import pyodbc\n",
+        "from langchain.chat_models import AzureChatOpenAI\n",
+        "from langchain.agents import create_sql_agent\n",
+        "from langchain.agents.agent_toolkits import SQLDatabaseToolkit\n",
+        "from langchain.sql_database import SQLDatabase\n",
+        "from langchain import SQLDatabaseChain\n",
+        "from langchain.chains import SQLDatabaseSequentialChain\n",
+        "from langchain.agents import AgentExecutor\n",
+        "from langchain.callbacks.manager import CallbackManager\n",
+        "\n",
+        "from common.prompts import MSSQL_PROMPT, MSSQL_AGENT_PREFIX, MSSQL_AGENT_FORMAT_INSTRUCTIONS\n",
+        "\n",
+        "from IPython.display import Markdown, HTML, display  \n",
+        "\n",
+        "from dotenv import load_dotenv\n",
+        "load_dotenv(\"credentials.env\")\n",
+        "\n",
+        "def printmd(string):\n",
+        "    display(Markdown(string))"
+      ],
+      "outputs": [],
+      "execution_count": 1,
+      "metadata": {
+        "gather": {
+          "logged": 1693758579468
+        }
+      },
+      "id": "c1fb79a3-4856-4721-988c-112813690a90"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Set the ENV variables that Langchain needs to connect to Azure OpenAI\n",
+        "os.environ[\"OPENAI_API_BASE\"] = os.environ[\"AZURE_OPENAI_ENDPOINT\"]\n",
+        "os.environ[\"OPENAI_API_KEY\"] = os.environ[\"AZURE_OPENAI_API_KEY\"]\n",
+        "os.environ[\"OPENAI_API_VERSION\"] = os.environ[\"AZURE_OPENAI_API_VERSION\"]\n",
+        "os.environ[\"OPENAI_API_TYPE\"] = \"azure\""
+      ],
+      "outputs": [],
+      "execution_count": 2,
+      "metadata": {
+        "gather": {
+          "logged": 1693758579595
+        }
+      },
+      "id": "258a6e99-2d4f-4147-b8ee-c64c85296181"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Install MS SQL DB driver in your machine"
+      ],
+      "metadata": {},
+      "id": "1e8e0b32-a6b5-4b1c-943d-e57b737213fa"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "We need the driver installed on this compute in order to talk to the SQL DB, so run the below cell once<br>\n",
+        "Reference: https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server?view=sql-server-ver16&tabs=ubuntu18-install%2Calpine17-install%2Cdebian8-install%2Credhat7-13-install%2Crhel7-offline"
+      ],
+      "metadata": {},
+      "id": "9a353df6-0966-4e43-a914-6a2856eb140a"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "#!sudo ./download_odbc_driver.sh"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "Downloading...\n  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n100   983  100   983    0     0  40958      0 --:--:-- --:--:-- --:--:-- 42739\nOK\n  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n100    89  100    89    0     0   3423      0 --:--:-- --:--:-- --:--:--  3423\nUpdating apt-get..\nGet:1 file:/var/nccl-repo-2.2.13-ga-cuda9.2  InRelease\nIgn:1 file:/var/nccl-repo-2.2.13-ga-cuda9.2  InRelease\nGet:2 file:/var/nccl-repo-2.2.13-ga-cuda9.2  Release [574 B]                   \nGet:2 file:/var/nccl-repo-2.2.13-ga-cuda9.2  Release [574 B]                   \nHit:3 https://packages.microsoft.com/repos/azure-cli focal InRelease           \nHit:4 https://packages.microsoft.com/repos/azurecore focal InRelease           \nHit:5 https://packages.microsoft.com/ubuntu/20.04/prod focal InRelease         \nGet:6 https://nvidia.github.io/libnvidia-container/stable/ubuntu18.04/amd64  InRelease [1484 B]\nHit:7 https://nvidia.github.io/nvidia-container-runtime/stable/ubuntu18.04/amd64  InRelease\nHit:8 https://nvidia.github.io/nvidia-docker/ubuntu18.04/amd64  InRelease      \nGet:9 https://storage.googleapis.com/tensorflow-serving-apt stable InRelease [3026 B]\nHit:10 http://azure.archive.ubuntu.com/ubuntu focal InRelease                  \nGet:11 http://azure.archive.ubuntu.com/ubuntu focal-updates InRelease [114 kB] \nGet:12 http://azure.archive.ubuntu.com/ubuntu focal-backports InRelease [108 kB]\nGet:13 http://azure.archive.ubuntu.com/ubuntu focal-security InRelease [114 kB]\nHit:15 https://apt.repos.intel.com/mkl all InRelease                           \nHit:16 http://ppa.launchpad.net/cran/libgit2/ubuntu focal InRelease\nHit:17 https://cloud.r-project.org/bin/linux/ubuntu focal-cran40/ InRelease    \nHit:18 http://ppa.launchpad.net/git-core/ppa/ubuntu focal InRelease            \nErr:9 https://storage.googleapis.com/tensorflow-serving-apt stable InRelease\n  The following signatures were invalid: EXPKEYSIG 544B7F63BF9E4D5F Tensorflow Serving Developer (Tensorflow Serving APT repository key) <tensorflow-serving-dev@googlegroups.com>\nFetched 337 kB in 2s (211 kB/s)\nReading package lists... Done\nW: Target Packages (main/binary-amd64/Packages) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target Packages (main/binary-armhf/Packages) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target Packages (main/binary-arm64/Packages) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target Packages (main/binary-all/Packages) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target Translations (main/i18n/Translation-en) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target CNF (main/cnf/Commands-amd64) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target CNF (main/cnf/Commands-all) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: An error occurred during the signature verification. The repository is not updated and the previous index files will be used. GPG error: https://storage.googleapis.com/tensorflow-serving-apt stable InRelease: The following signatures were invalid: EXPKEYSIG 544B7F63BF9E4D5F Tensorflow Serving Developer (Tensorflow Serving APT repository key) <tensorflow-serving-dev@googlegroups.com>\nW: Failed to fetch https://storage.googleapis.com/tensorflow-serving-apt/dists/stable/InRelease  The following signatures were invalid: EXPKEYSIG 544B7F63BF9E4D5F Tensorflow Serving Developer (Tensorflow Serving APT repository key) <tensorflow-serving-dev@googlegroups.com>\nW: Some index files failed to download. They have been ignored, or old ones used instead.\nW: Target Packages (main/binary-amd64/Packages) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target Packages (main/binary-armhf/Packages) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target Packages (main/binary-arm64/Packages) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target Packages (main/binary-all/Packages) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target Translations (main/i18n/Translation-en) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target CNF (main/cnf/Commands-amd64) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nW: Target CNF (main/cnf/Commands-all) is configured multiple times in /etc/apt/sources.list.d/microsoft-prod.list:1 and /etc/apt/sources.list.d/mssql-release.list:1\nInstalling msodbcsql18..\nReading package lists... Done\nBuilding dependency tree       \nReading state information... Done\nmsodbcsql17 is already the newest version (17.10.4.1-1).\nThe following packages were automatically installed and are no longer required:\n  ca-certificates-java cmake-data cuda-command-line-tools-11-3\n  cuda-compiler-11-3 cuda-cudart-11-3 cuda-cudart-dev-11-3 cuda-cuobjdump-11-3\n  cuda-cupti-11-3 cuda-cupti-dev-11-3 cuda-cuxxfilt-11-3\n  cuda-documentation-11-3 cuda-driver-dev-11-3 cuda-gdb-11-3\n  cuda-libraries-11-3 cuda-libraries-dev-11-3 cuda-memcheck-11-3\n  cuda-nsight-11-3 cuda-nsight-compute-11-3 cuda-nsight-systems-11-3\n  cuda-nvcc-11-3 cuda-nvdisasm-11-3 cuda-nvml-dev-11-3 cuda-nvprof-11-3\n  cuda-nvprune-11-3 cuda-nvrtc-11-3 cuda-nvrtc-dev-11-3 cuda-nvtx-11-3\n  cuda-nvvp-11-3 cuda-samples-11-3 cuda-sanitizer-11-3 cuda-thrust-11-3\n  cuda-toolkit-11-3 cuda-toolkit-11-3-config-common\n  cuda-toolkit-11-config-common cuda-toolkit-config-common cuda-tools-11-3\n  cuda-visual-tools-11-3 default-jre default-jre-headless fonts-dejavu-extra\n  fonts-droid-fallback fonts-noto-mono fonts-urw-base35 ghostscript gsfonts\n  gyp imagemagick-6-common java-common javascript-common libaec-dev libaec0\n  libatk-wrapper-java libatk-wrapper-java-jni libcublas-11-3\n  libcublas-dev-11-3 libcufft-11-3 libcufft-dev-11-3 libcurand-11-3\n  libcurand-dev-11-3 libcusolver-11-3 libcusolver-dev-11-3 libcusparse-11-3\n  libcusparse-dev-11-3 libdjvulibre-dev libdjvulibre-text libdjvulibre21\n  libexif-dev libexif-doc libexif12 libfftw3-double3 libgs9 libgs9-common\n  libidn11 libijs-0.35 libilmbase-dev libilmbase24 libjbig-dev libjbig2dec0\n  libjs-inherits libjs-is-typedarray libjs-jquery libjs-psl\n  libjs-typedarray-to-buffer libjsoncpp1 liblcms2-dev liblqr-1-0\n  liblqr-1-0-dev libmagick++-6-headers libmagick++-6.q16-8\n  libmagickcore-6-arch-config libmagickcore-6-headers libmagickcore-6.q16-6\n  libmagickwand-6-headers libmagickwand-6.q16-6 libnorm-dev libnorm1\n  libnpp-11-3 libnpp-dev-11-3 libnvidia-common-530 libnvjpeg-11-3\n  libnvjpeg-dev-11-3 libpcsclite1 libpgm-5.2-0 libpgm-dev librhash0\n  librsvg2-dev libsodium-dev libsystemd-dev libsz2 libtiff-dev libtiffxx5\n  libwmf-dev libwmf0.2-7 libxt-dev node-abbrev node-ajv node-ansi\n  node-ansi-align node-ansi-regex node-ansi-styles node-ansistyles node-aproba\n  node-archy node-are-we-there-yet node-asap node-asn1 node-assert-plus\n  node-asynckit node-aws-sign2 node-aws4 node-balanced-match node-bcrypt-pbkdf\n  node-bl node-bluebird node-boxen node-brace-expansion node-builtin-modules\n  node-builtins node-cacache node-call-limit node-camelcase node-caseless\n  node-chalk node-chownr node-ci-info node-cli-boxes node-cliui node-clone\n  node-co node-color-convert node-color-name node-colors node-columnify\n  node-combined-stream node-concat-map node-concat-stream node-config-chain\n  node-configstore node-console-control-strings node-copy-concurrently\n  node-core-util-is node-cross-spawn node-crypto-random-string node-cyclist\n  node-dashdash node-debug node-decamelize node-decompress-response\n  node-deep-extend node-defaults node-define-properties node-delayed-stream\n  node-delegates node-detect-indent node-detect-newline node-dot-prop\n  node-duplexer3 node-duplexify node-ecc-jsbn node-editor node-encoding\n  node-end-of-stream node-err-code node-errno node-es6-promise\n  node-escape-string-regexp node-execa node-extend node-extsprintf\n  node-fast-deep-equal node-find-up node-flush-write-stream node-forever-agent\n  node-form-data node-from2 node-fs-vacuum node-fs-write-stream-atomic\n  node-fs.realpath node-function-bind node-gauge node-genfun\n  node-get-caller-file node-get-stream node-getpass node-glob node-got\n  node-graceful-fs node-har-schema node-har-validator node-has-flag\n  node-has-symbol-support-x node-has-to-string-tag-x node-has-unicode\n  node-http-signature node-iconv-lite node-iferr node-import-lazy\n  node-imurmurhash node-inflight node-inherits node-ini node-invert-kv node-ip\n  node-ip-regex node-is-npm node-is-obj node-is-object node-is-path-inside\n  node-is-plain-obj node-is-retry-allowed node-is-stream node-is-typedarray\n  node-isarray node-isexe node-isstream node-isurl node-jsbn\n  node-json-parse-better-errors node-json-schema node-json-schema-traverse\n  node-json-stable-stringify node-json-stringify-safe node-jsonify\n  node-jsonparse node-jsonstream node-jsprim node-latest-version\n  node-lazy-property node-lcid node-locate-path node-lockfile node-lodash\n  node-lodash-packages node-lowercase-keys node-lru-cache node-make-dir\n  node-mem node-mime node-mime-types node-mimic-fn node-mimic-response\n  node-minimatch node-minimist node-mississippi node-mkdirp\n  node-move-concurrently node-ms node-mute-stream node-nopt\n  node-normalize-package-data node-npm-bundled node-npm-run-path node-npmlog\n  node-number-is-nan node-oauth-sign node-object-assign node-once node-opener\n  node-os-locale node-os-tmpdir node-osenv node-p-cancelable node-p-finally\n  node-p-is-promise node-p-limit node-p-locate node-p-timeout\n  node-package-json node-parallel-transform node-path-exists\n  node-path-is-absolute node-path-is-inside node-performance-now node-pify\n  node-prepend-http node-process-nextick-args node-promise-inflight\n  node-promise-retry node-promzard node-proto-list node-prr node-pseudomap\n  node-psl node-pump node-pumpify node-punycode node-qs node-qw node-rc\n  node-read node-read-package-json node-readable-stream\n  node-registry-auth-token node-registry-url node-request\n  node-require-directory node-require-main-filename node-resolve\n  node-resolve-from node-retry node-rimraf node-run-queue node-safe-buffer\n  node-semver node-semver-diff node-set-blocking node-sha node-shebang-command\n  node-shebang-regex node-signal-exit node-slash node-slide node-sorted-object\n  node-spdx-correct node-spdx-exceptions node-spdx-expression-parse\n  node-spdx-license-ids node-sshpk node-ssri node-stream-each\n  node-stream-iterate node-stream-shift node-strict-uri-encode\n  node-string-decoder node-string-width node-strip-ansi node-strip-eof\n  node-strip-json-comments node-supports-color node-term-size node-text-table\n  node-through node-through2 node-timed-out node-tough-cookie\n  node-tunnel-agent node-tweetnacl node-typedarray node-typedarray-to-buffer\n  node-uid-number node-unique-filename node-unique-string node-unpipe\n  node-uri-js node-url-parse-lax node-url-to-options node-util-deprecate\n  node-uuid node-validate-npm-package-license node-validate-npm-package-name\n  node-verror node-wcwidth.js node-which node-which-module node-wide-align\n  node-widest-line node-wrap-ansi node-wrappy node-write-file-atomic\n  node-xdg-basedir node-xtend node-y18n node-yallist node-yargs\n  node-yargs-parser nsight-compute-2021.1.1 nsight-systems-2021.1.3\n  openjdk-11-jre openjdk-11-jre-headless poppler-data python-pkg-resources\nUse 'sudo apt autoremove' to remove them.\n0 upgraded, 0 newly installed, 0 to remove and 145 not upgraded.\nReading package lists... Done\nBuilding dependency tree       \nReading state information... Done\nmssql-tools is already the newest version (17.10.1.1-1).\nThe following packages were automatically installed and are no longer required:\n  ca-certificates-java cmake-data cuda-command-line-tools-11-3\n  cuda-compiler-11-3 cuda-cudart-11-3 cuda-cudart-dev-11-3 cuda-cuobjdump-11-3\n  cuda-cupti-11-3 cuda-cupti-dev-11-3 cuda-cuxxfilt-11-3\n  cuda-documentation-11-3 cuda-driver-dev-11-3 cuda-gdb-11-3\n  cuda-libraries-11-3 cuda-libraries-dev-11-3 cuda-memcheck-11-3\n  cuda-nsight-11-3 cuda-nsight-compute-11-3 cuda-nsight-systems-11-3\n  cuda-nvcc-11-3 cuda-nvdisasm-11-3 cuda-nvml-dev-11-3 cuda-nvprof-11-3\n  cuda-nvprune-11-3 cuda-nvrtc-11-3 cuda-nvrtc-dev-11-3 cuda-nvtx-11-3\n  cuda-nvvp-11-3 cuda-samples-11-3 cuda-sanitizer-11-3 cuda-thrust-11-3\n  cuda-toolkit-11-3 cuda-toolkit-11-3-config-common\n  cuda-toolkit-11-config-common cuda-toolkit-config-common cuda-tools-11-3\n  cuda-visual-tools-11-3 default-jre default-jre-headless fonts-dejavu-extra\n  fonts-droid-fallback fonts-noto-mono fonts-urw-base35 ghostscript gsfonts\n  gyp imagemagick-6-common java-common javascript-common libaec-dev libaec0\n  libatk-wrapper-java libatk-wrapper-java-jni libcublas-11-3\n  libcublas-dev-11-3 libcufft-11-3 libcufft-dev-11-3 libcurand-11-3\n  libcurand-dev-11-3 libcusolver-11-3 libcusolver-dev-11-3 libcusparse-11-3\n  libcusparse-dev-11-3 libdjvulibre-dev libdjvulibre-text libdjvulibre21\n  libexif-dev libexif-doc libexif12 libfftw3-double3 libgs9 libgs9-common\n  libidn11 libijs-0.35 libilmbase-dev libilmbase24 libjbig-dev libjbig2dec0\n  libjs-inherits libjs-is-typedarray libjs-jquery libjs-psl\n  libjs-typedarray-to-buffer libjsoncpp1 liblcms2-dev liblqr-1-0\n  liblqr-1-0-dev libmagick++-6-headers libmagick++-6.q16-8\n  libmagickcore-6-arch-config libmagickcore-6-headers libmagickcore-6.q16-6\n  libmagickwand-6-headers libmagickwand-6.q16-6 libnorm-dev libnorm1\n  libnpp-11-3 libnpp-dev-11-3 libnvidia-common-530 libnvjpeg-11-3\n  libnvjpeg-dev-11-3 libpcsclite1 libpgm-5.2-0 libpgm-dev librhash0\n  librsvg2-dev libsodium-dev libsystemd-dev libsz2 libtiff-dev libtiffxx5\n  libwmf-dev libwmf0.2-7 libxt-dev node-abbrev node-ajv node-ansi\n  node-ansi-align node-ansi-regex node-ansi-styles node-ansistyles node-aproba\n  node-archy node-are-we-there-yet node-asap node-asn1 node-assert-plus\n  node-asynckit node-aws-sign2 node-aws4 node-balanced-match node-bcrypt-pbkdf\n  node-bl node-bluebird node-boxen node-brace-expansion node-builtin-modules\n  node-builtins node-cacache node-call-limit node-camelcase node-caseless\n  node-chalk node-chownr node-ci-info node-cli-boxes node-cliui node-clone\n  node-co node-color-convert node-color-name node-colors node-columnify\n  node-combined-stream node-concat-map node-concat-stream node-config-chain\n  node-configstore node-console-control-strings node-copy-concurrently\n  node-core-util-is node-cross-spawn node-crypto-random-string node-cyclist\n  node-dashdash node-debug node-decamelize node-decompress-response\n  node-deep-extend node-defaults node-define-properties node-delayed-stream\n  node-delegates node-detect-indent node-detect-newline node-dot-prop\n  node-duplexer3 node-duplexify node-ecc-jsbn node-editor node-encoding\n  node-end-of-stream node-err-code node-errno node-es6-promise\n  node-escape-string-regexp node-execa node-extend node-extsprintf\n  node-fast-deep-equal node-find-up node-flush-write-stream node-forever-agent\n  node-form-data node-from2 node-fs-vacuum node-fs-write-stream-atomic\n  node-fs.realpath node-function-bind node-gauge node-genfun\n  node-get-caller-file node-get-stream node-getpass node-glob node-got\n  node-graceful-fs node-har-schema node-har-validator node-has-flag\n  node-has-symbol-support-x node-has-to-string-tag-x node-has-unicode\n  node-http-signature node-iconv-lite node-iferr node-import-lazy\n  node-imurmurhash node-inflight node-inherits node-ini node-invert-kv node-ip\n  node-ip-regex node-is-npm node-is-obj node-is-object node-is-path-inside\n  node-is-plain-obj node-is-retry-allowed node-is-stream node-is-typedarray\n  node-isarray node-isexe node-isstream node-isurl node-jsbn\n  node-json-parse-better-errors node-json-schema node-json-schema-traverse\n  node-json-stable-stringify node-json-stringify-safe node-jsonify\n  node-jsonparse node-jsonstream node-jsprim node-latest-version\n  node-lazy-property node-lcid node-locate-path node-lockfile node-lodash\n  node-lodash-packages node-lowercase-keys node-lru-cache node-make-dir\n  node-mem node-mime node-mime-types node-mimic-fn node-mimic-response\n  node-minimatch node-minimist node-mississippi node-mkdirp\n  node-move-concurrently node-ms node-mute-stream node-nopt\n  node-normalize-package-data node-npm-bundled node-npm-run-path node-npmlog\n  node-number-is-nan node-oauth-sign node-object-assign node-once node-opener\n  node-os-locale node-os-tmpdir node-osenv node-p-cancelable node-p-finally\n  node-p-is-promise node-p-limit node-p-locate node-p-timeout\n  node-package-json node-parallel-transform node-path-exists\n  node-path-is-absolute node-path-is-inside node-performance-now node-pify\n  node-prepend-http node-process-nextick-args node-promise-inflight\n  node-promise-retry node-promzard node-proto-list node-prr node-pseudomap\n  node-psl node-pump node-pumpify node-punycode node-qs node-qw node-rc\n  node-read node-read-package-json node-readable-stream\n  node-registry-auth-token node-registry-url node-request\n  node-require-directory node-require-main-filename node-resolve\n  node-resolve-from node-retry node-rimraf node-run-queue node-safe-buffer\n  node-semver node-semver-diff node-set-blocking node-sha node-shebang-command\n  node-shebang-regex node-signal-exit node-slash node-slide node-sorted-object\n  node-spdx-correct node-spdx-exceptions node-spdx-expression-parse\n  node-spdx-license-ids node-sshpk node-ssri node-stream-each\n  node-stream-iterate node-stream-shift node-strict-uri-encode\n  node-string-decoder node-string-width node-strip-ansi node-strip-eof\n  node-strip-json-comments node-supports-color node-term-size node-text-table\n  node-through node-through2 node-timed-out node-tough-cookie\n  node-tunnel-agent node-tweetnacl node-typedarray node-typedarray-to-buffer\n  node-uid-number node-unique-filename node-unique-string node-unpipe\n  node-uri-js node-url-parse-lax node-url-to-options node-util-deprecate\n  node-uuid node-validate-npm-package-license node-validate-npm-package-name\n  node-verror node-wcwidth.js node-which node-which-module node-wide-align\n  node-widest-line node-wrap-ansi node-wrappy node-write-file-atomic\n  node-xdg-basedir node-xtend node-y18n node-yallist node-yargs\n  node-yargs-parser nsight-compute-2021.1.1 nsight-systems-2021.1.3\n  openjdk-11-jre openjdk-11-jre-headless poppler-data python-pkg-resources\nUse 'sudo apt autoremove' to remove them.\n0 upgraded, 0 newly installed, 0 to remove and 145 not upgraded.\nReading package lists... Done\nBuilding dependency tree       \nReading state information... Done\nunixodbc-dev is already the newest version (2.3.11-1).\nThe following packages were automatically installed and are no longer required:\n  ca-certificates-java cmake-data cuda-command-line-tools-11-3\n  cuda-compiler-11-3 cuda-cudart-11-3 cuda-cudart-dev-11-3 cuda-cuobjdump-11-3\n  cuda-cupti-11-3 cuda-cupti-dev-11-3 cuda-cuxxfilt-11-3\n  cuda-documentation-11-3 cuda-driver-dev-11-3 cuda-gdb-11-3\n  cuda-libraries-11-3 cuda-libraries-dev-11-3 cuda-memcheck-11-3\n  cuda-nsight-11-3 cuda-nsight-compute-11-3 cuda-nsight-systems-11-3\n  cuda-nvcc-11-3 cuda-nvdisasm-11-3 cuda-nvml-dev-11-3 cuda-nvprof-11-3\n  cuda-nvprune-11-3 cuda-nvrtc-11-3 cuda-nvrtc-dev-11-3 cuda-nvtx-11-3\n  cuda-nvvp-11-3 cuda-samples-11-3 cuda-sanitizer-11-3 cuda-thrust-11-3\n  cuda-toolkit-11-3 cuda-toolkit-11-3-config-common\n  cuda-toolkit-11-config-common cuda-toolkit-config-common cuda-tools-11-3\n  cuda-visual-tools-11-3 default-jre default-jre-headless fonts-dejavu-extra\n  fonts-droid-fallback fonts-noto-mono fonts-urw-base35 ghostscript gsfonts\n  gyp imagemagick-6-common java-common javascript-common libaec-dev libaec0\n  libatk-wrapper-java libatk-wrapper-java-jni libcublas-11-3\n  libcublas-dev-11-3 libcufft-11-3 libcufft-dev-11-3 libcurand-11-3\n  libcurand-dev-11-3 libcusolver-11-3 libcusolver-dev-11-3 libcusparse-11-3\n  libcusparse-dev-11-3 libdjvulibre-dev libdjvulibre-text libdjvulibre21\n  libexif-dev libexif-doc libexif12 libfftw3-double3 libgs9 libgs9-common\n  libidn11 libijs-0.35 libilmbase-dev libilmbase24 libjbig-dev libjbig2dec0\n  libjs-inherits libjs-is-typedarray libjs-jquery libjs-psl\n  libjs-typedarray-to-buffer libjsoncpp1 liblcms2-dev liblqr-1-0\n  liblqr-1-0-dev libmagick++-6-headers libmagick++-6.q16-8\n  libmagickcore-6-arch-config libmagickcore-6-headers libmagickcore-6.q16-6\n  libmagickwand-6-headers libmagickwand-6.q16-6 libnorm-dev libnorm1\n  libnpp-11-3 libnpp-dev-11-3 libnvidia-common-530 libnvjpeg-11-3\n  libnvjpeg-dev-11-3 libpcsclite1 libpgm-5.2-0 libpgm-dev librhash0\n  librsvg2-dev libsodium-dev libsystemd-dev libsz2 libtiff-dev libtiffxx5\n  libwmf-dev libwmf0.2-7 libxt-dev node-abbrev node-ajv node-ansi\n  node-ansi-align node-ansi-regex node-ansi-styles node-ansistyles node-aproba\n  node-archy node-are-we-there-yet node-asap node-asn1 node-assert-plus\n  node-asynckit node-aws-sign2 node-aws4 node-balanced-match node-bcrypt-pbkdf\n  node-bl node-bluebird node-boxen node-brace-expansion node-builtin-modules\n  node-builtins node-cacache node-call-limit node-camelcase node-caseless\n  node-chalk node-chownr node-ci-info node-cli-boxes node-cliui node-clone\n  node-co node-color-convert node-color-name node-colors node-columnify\n  node-combined-stream node-concat-map node-concat-stream node-config-chain\n  node-configstore node-console-control-strings node-copy-concurrently\n  node-core-util-is node-cross-spawn node-crypto-random-string node-cyclist\n  node-dashdash node-debug node-decamelize node-decompress-response\n  node-deep-extend node-defaults node-define-properties node-delayed-stream\n  node-delegates node-detect-indent node-detect-newline node-dot-prop\n  node-duplexer3 node-duplexify node-ecc-jsbn node-editor node-encoding\n  node-end-of-stream node-err-code node-errno node-es6-promise\n  node-escape-string-regexp node-execa node-extend node-extsprintf\n  node-fast-deep-equal node-find-up node-flush-write-stream node-forever-agent\n  node-form-data node-from2 node-fs-vacuum node-fs-write-stream-atomic\n  node-fs.realpath node-function-bind node-gauge node-genfun\n  node-get-caller-file node-get-stream node-getpass node-glob node-got\n  node-graceful-fs node-har-schema node-har-validator node-has-flag\n  node-has-symbol-support-x node-has-to-string-tag-x node-has-unicode\n  node-http-signature node-iconv-lite node-iferr node-import-lazy\n  node-imurmurhash node-inflight node-inherits node-ini node-invert-kv node-ip\n  node-ip-regex node-is-npm node-is-obj node-is-object node-is-path-inside\n  node-is-plain-obj node-is-retry-allowed node-is-stream node-is-typedarray\n  node-isarray node-isexe node-isstream node-isurl node-jsbn\n  node-json-parse-better-errors node-json-schema node-json-schema-traverse\n  node-json-stable-stringify node-json-stringify-safe node-jsonify\n  node-jsonparse node-jsonstream node-jsprim node-latest-version\n  node-lazy-property node-lcid node-locate-path node-lockfile node-lodash\n  node-lodash-packages node-lowercase-keys node-lru-cache node-make-dir\n  node-mem node-mime node-mime-types node-mimic-fn node-mimic-response\n  node-minimatch node-minimist node-mississippi node-mkdirp\n  node-move-concurrently node-ms node-mute-stream node-nopt\n  node-normalize-package-data node-npm-bundled node-npm-run-path node-npmlog\n  node-number-is-nan node-oauth-sign node-object-assign node-once node-opener\n  node-os-locale node-os-tmpdir node-osenv node-p-cancelable node-p-finally\n  node-p-is-promise node-p-limit node-p-locate node-p-timeout\n  node-package-json node-parallel-transform node-path-exists\n  node-path-is-absolute node-path-is-inside node-performance-now node-pify\n  node-prepend-http node-process-nextick-args node-promise-inflight\n  node-promise-retry node-promzard node-proto-list node-prr node-pseudomap\n  node-psl node-pump node-pumpify node-punycode node-qs node-qw node-rc\n  node-read node-read-package-json node-readable-stream\n  node-registry-auth-token node-registry-url node-request\n  node-require-directory node-require-main-filename node-resolve\n  node-resolve-from node-retry node-rimraf node-run-queue node-safe-buffer\n  node-semver node-semver-diff node-set-blocking node-sha node-shebang-command\n  node-shebang-regex node-signal-exit node-slash node-slide node-sorted-object\n  node-spdx-correct node-spdx-exceptions node-spdx-expression-parse\n  node-spdx-license-ids node-sshpk node-ssri node-stream-each\n  node-stream-iterate node-stream-shift node-strict-uri-encode\n  node-string-decoder node-string-width node-strip-ansi node-strip-eof\n  node-strip-json-comments node-supports-color node-term-size node-text-table\n  node-through node-through2 node-timed-out node-tough-cookie\n  node-tunnel-agent node-tweetnacl node-typedarray node-typedarray-to-buffer\n  node-uid-number node-unique-filename node-unique-string node-unpipe\n  node-uri-js node-url-parse-lax node-url-to-options node-util-deprecate\n  node-uuid node-validate-npm-package-license node-validate-npm-package-name\n  node-verror node-wcwidth.js node-which node-which-module node-wide-align\n  node-widest-line node-wrap-ansi node-wrappy node-write-file-atomic\n  node-xdg-basedir node-xtend node-y18n node-yallist node-yargs\n  node-yargs-parser nsight-compute-2021.1.1 nsight-systems-2021.1.3\n  openjdk-11-jre openjdk-11-jre-headless poppler-data python-pkg-resources\nUse 'sudo apt autoremove' to remove them.\n0 upgraded, 0 newly installed, 0 to remove and 145 not upgraded.\nDONE\n"
+        }
+      ],
+      "execution_count": 3,
+      "metadata": {
+        "gather": {
+          "logged": 1692371807071
+        }
+      },
+      "id": "65fbffc7-e149-4eb3-a4db-9f114b06f205"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "print(os.environ[\"SQL_SERVER_NAME\"])"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "njo-npd-sqlserver1.database.windows.net\n"
+        }
+      ],
+      "execution_count": 3,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        },
+        "gather": {
+          "logged": 1693758586570
+        }
+      },
+      "id": "d4bae883-bedc-40ec-81d2-713997466d91"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from sqlalchemy import create_engine\n",
+        "from sqlalchemy.engine.url import URL\n",
+        "\n",
+        "db_config = {\n",
+        "                'drivername': 'mssql+pyodbc',\n",
+        "                'username': os.environ[\"SQL_SERVER_USERNAME\"] +'@'+ os.environ[\"SQL_SERVER_NAME\"],\n",
+        "                'password': os.environ[\"SQL_SERVER_PASSWORD\"],\n",
+        "                'host': os.environ[\"SQL_SERVER_NAME\"],\n",
+        "                'port': 1433,\n",
+        "                'database': os.environ[\"SQL_SERVER_DATABASE\"],\n",
+        "                'query': {'driver': 'ODBC Driver 17 for SQL Server'}\n",
+        "            }\n",
+        "\n",
+        "# Create a URL object for connecting to the database\n",
+        "db_url = URL.create(**db_config)\n",
+        "\n",
+        "# Print the resulting URL string\n",
+        "print(db_url)\n",
+        "\n",
+        "# Connect to the Azure SQL Database using the URL string\n",
+        "engine = create_engine(db_url)\n",
+        "\n",
+        "# Test the connection\n",
+        "try:\n",
+        "    conn = engine.connect()\n",
+        "    print(\"Connection successful!\")\n",
+        "    result = engine.execute(\"SELECT @@Version\")\n",
+        "    for row in result:\n",
+        "        print(row)\n",
+        "    conn.close()\n",
+        "    \n",
+        "except OperationalError:\n",
+        "    print(\"Connection failed.\")"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "mssql+pyodbc://sqladminuser%40njo-npd-sqlserver1.database.windows.net:Solution$1@njo-npd-sqlserver1.database.windows.net:1433/db1?driver=ODBC+Driver+17+for+SQL+Server\nConnection successful!\n('Microsoft SQL Azure (RTM) - 12.0.2000.8 \\n\\tJul 17 2023 18:40:52 \\n\\tCopyright (C) 2022 Microsoft Corporation\\n',)\n"
+        }
+      ],
+      "execution_count": 21,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        },
+        "gather": {
+          "logged": 1693760561755
+        }
+      },
+      "id": "e96ffc89-c4b1-488a-85c9-21afc2521fae"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Query with LLM"
+      ],
+      "metadata": {},
+      "id": "33ad46af-11a4-41a6-94af-15509fd9e16c"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Create or LLM Langchain object using GPT-4 deployment\n",
+        "# Again we need GPT-4. It is necesary in the use of Agents. GPT-35-Turbo will make many mistakes.\n",
+        "#llm = AzureChatOpenAI(deployment_name=\"gpt-4\", temperature=0, max_tokens=500)\n",
+        "llm = AzureChatOpenAI(deployment_name=\"gpt-35-turbo\", temperature=0, max_tokens=500)"
+      ],
+      "outputs": [],
+      "execution_count": 22,
+      "metadata": {
+        "gather": {
+          "logged": 1693760564495
+        }
+      },
+      "id": "7faef3c0-8166-4f3b-a5e3-d30acfd65fd3"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Let's use a type of Chain made for this type of SQL work.  \n",
+        "db = SQLDatabase.from_uri(db_url)\n",
+        "db_chain = SQLDatabaseChain.from_llm(llm=llm, db=db, prompt=MSSQL_PROMPT, top_k=10, verbose=False)"
+      ],
+      "outputs": [],
+      "execution_count": 23,
+      "metadata": {
+        "gather": {
+          "logged": 1693760574794
+        }
+      },
+      "id": "6cbe650c-9e0a-4209-9595-de13f2f1ee0a"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Let's check our prompt we created in common/prompts.py\n",
+        "print(db_chain.llm_chain.prompt.template)"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "\nYou are an MS SQL expert. Given an input question, first create a syntactically correct MS SQL query to run, then look at the results of the query and return the answer to the input question.\n\nUnless the user specifies in the question a specific number of examples to obtain, query for at most {top_k} results using the TOP clause as per MS SQL. You can order the results to return the most informative data in the database.\n\nNever query for all columns from a table. You must query only the columns that are needed to answer the question. Wrap each column name in square brackets ([]) to denote them as delimited identifiers.\n\nYour response should be in Markdown. However, **when running the SQL commands (SQLQuery), do not include the markdown backticks**. Those are only for formatting the response, not for executing the command.\n\nFor example, if your SQL query is:\nPay attention to use only the column names you can see in the tables below. Be careful to not query for columns that do not exist. Also, pay attention to which column is in which table.\n\n**Do not use double quotes on the SQL query**. \n\nYour response should be in Markdown.\n\n** ALWAYS before giving the Final Answer, try another method**. Then reflect on the answers of the two methods you did and ask yourself if it answers correctly the original question. If you are not sure, try another method.\nIf the runs does not give the same result, reflect and try again two more times until you have two runs that have the same result. If you still cannot arrive to a consistent result, say that you are not sure of the answer. But, if you are sure of the correct answer, create a beautiful and thorough response. DO NOT MAKE UP AN ANSWER OR USE PRIOR KNOWLEDGE, ONLY USE THE RESULTS OF THE CALCULATIONS YOU HAVE DONE. \n\nALWAYS, as part of your final answer, explain how you got to the answer on a section that starts with: \n\nExplanation:\n. Include the SQL query as part of the explanation section.\n\nUse the following format:\n\nQuestion: Question here\nSQLQuery: SQL Query to run\nSQLResult: Result of the SQLQuery\nAnswer: Final answer here\nExplanation:\n\nFor example:\n<=== Beginning of example\n\nQuestion: How many accounts of Automotive & Mobility vertical are there in Texas state?\nSQLQuery: SELECT [account_name]  FROM [msx].[accounts] where [Vertical] = 'Oil & Gas'\nSQLResult: [(SEWELL VILLAGE CADILLAC INC),(PARK PLACE MOTORS),(Velasco 495 Automotive),(TRIUMPH SSB)]\nAnswer: There 4 accounts of Automotive & Mobility vertical in Texas state.\n\n\nExplanation:\nI queried the msx.[accounts] table for account_name column where the AddressState is 'Texas' and Vertical is 'Automotive & Mobility' . The query returned a list of tuples with account names. To answer the question, I took the sum of all the account names in the list, which is 4. \nI used the following query\n\n```sql\nSELECT account_name  FROM [msx].[accounts] where Vertical = 'Automotive & Mobility' and AddressState = 'Texas'\n```\n===> End of Example\n\nOnly use the following tables:\n{table_info}\n\nQuestion: {input}\n"
+        }
+      ],
+      "execution_count": 24,
+      "metadata": {
+        "gather": {
+          "logged": 1693760574924
+        }
+      },
+      "id": "ad678667-9031-4140-a060-2e5dc46799b0"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Natural Language question (query)\n",
+        "QUESTION = \"How many accounts of Oil & Gas Vertical in California state and nationwide as the total of all states\""
+      ],
+      "outputs": [],
+      "execution_count": 25,
+      "metadata": {
+        "gather": {
+          "logged": 1693760575066
+        }
+      },
+      "id": "ae80c022-415e-40d1-b205-1744a3164d70"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "printmd(db_chain(QUESTION)['result'])"
+      ],
+      "outputs": [
+        {
+          "output_type": "error",
+          "ename": "ProgrammingError",
+          "evalue": "(pyodbc.ProgrammingError) ('42S02', \"[42S02] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]Invalid object name 'msx.accounts'. (208) (SQLExecDirectW)\")\n[SQL: SELECT COUNT(*) as 'California', (SELECT COUNT(*) FROM [msx].[accounts] WHERE Vertical = 'Oil & Gas') as 'Nationwide' FROM [msx].[accounts] WHERE Vertical = 'Oil & Gas' AND AddressState = 'California']\n(Background on this error at: https://sqlalche.me/e/14/f405)",
+          "traceback": [
+            "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+            "\u001b[0;31mProgrammingError\u001b[0m                          Traceback (most recent call last)",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/engine/base.py:1910\u001b[0m, in \u001b[0;36mConnection._execute_context\u001b[0;34m(self, dialect, constructor, statement, parameters, execution_options, *args, **kw)\u001b[0m\n\u001b[1;32m   1909\u001b[0m     \u001b[38;5;28;01mif\u001b[39;00m \u001b[38;5;129;01mnot\u001b[39;00m evt_handled:\n\u001b[0;32m-> 1910\u001b[0m         \u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mdialect\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mdo_execute\u001b[49m\u001b[43m(\u001b[49m\n\u001b[1;32m   1911\u001b[0m \u001b[43m            \u001b[49m\u001b[43mcursor\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mstatement\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mparameters\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mcontext\u001b[49m\n\u001b[1;32m   1912\u001b[0m \u001b[43m        \u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m   1914\u001b[0m \u001b[38;5;28;01mif\u001b[39;00m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39m_has_events \u001b[38;5;129;01mor\u001b[39;00m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mengine\u001b[38;5;241m.\u001b[39m_has_events:\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/engine/default.py:736\u001b[0m, in \u001b[0;36mDefaultDialect.do_execute\u001b[0;34m(self, cursor, statement, parameters, context)\u001b[0m\n\u001b[1;32m    735\u001b[0m \u001b[38;5;28;01mdef\u001b[39;00m \u001b[38;5;21mdo_execute\u001b[39m(\u001b[38;5;28mself\u001b[39m, cursor, statement, parameters, context\u001b[38;5;241m=\u001b[39m\u001b[38;5;28;01mNone\u001b[39;00m):\n\u001b[0;32m--> 736\u001b[0m     \u001b[43mcursor\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mexecute\u001b[49m\u001b[43m(\u001b[49m\u001b[43mstatement\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mparameters\u001b[49m\u001b[43m)\u001b[49m\n",
+            "\u001b[0;31mProgrammingError\u001b[0m: ('42S02', \"[42S02] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]Invalid object name 'msx.accounts'. (208) (SQLExecDirectW)\")",
+            "\nThe above exception was the direct cause of the following exception:\n",
+            "\u001b[0;31mProgrammingError\u001b[0m                          Traceback (most recent call last)",
+            "Cell \u001b[0;32mIn[26], line 1\u001b[0m\n\u001b[0;32m----> 1\u001b[0m printmd(\u001b[43mdb_chain\u001b[49m\u001b[43m(\u001b[49m\u001b[43mQUESTION\u001b[49m\u001b[43m)\u001b[49m[\u001b[38;5;124m'\u001b[39m\u001b[38;5;124mresult\u001b[39m\u001b[38;5;124m'\u001b[39m])\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/langchain/chains/base.py:243\u001b[0m, in \u001b[0;36mChain.__call__\u001b[0;34m(self, inputs, return_only_outputs, callbacks, tags, metadata, include_run_info)\u001b[0m\n\u001b[1;32m    241\u001b[0m \u001b[38;5;28;01mexcept\u001b[39;00m (\u001b[38;5;167;01mKeyboardInterrupt\u001b[39;00m, \u001b[38;5;167;01mException\u001b[39;00m) \u001b[38;5;28;01mas\u001b[39;00m e:\n\u001b[1;32m    242\u001b[0m     run_manager\u001b[38;5;241m.\u001b[39mon_chain_error(e)\n\u001b[0;32m--> 243\u001b[0m     \u001b[38;5;28;01mraise\u001b[39;00m e\n\u001b[1;32m    244\u001b[0m run_manager\u001b[38;5;241m.\u001b[39mon_chain_end(outputs)\n\u001b[1;32m    245\u001b[0m final_outputs: Dict[\u001b[38;5;28mstr\u001b[39m, Any] \u001b[38;5;241m=\u001b[39m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mprep_outputs(\n\u001b[1;32m    246\u001b[0m     inputs, outputs, return_only_outputs\n\u001b[1;32m    247\u001b[0m )\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/langchain/chains/base.py:237\u001b[0m, in \u001b[0;36mChain.__call__\u001b[0;34m(self, inputs, return_only_outputs, callbacks, tags, metadata, include_run_info)\u001b[0m\n\u001b[1;32m    231\u001b[0m run_manager \u001b[38;5;241m=\u001b[39m callback_manager\u001b[38;5;241m.\u001b[39mon_chain_start(\n\u001b[1;32m    232\u001b[0m     dumpd(\u001b[38;5;28mself\u001b[39m),\n\u001b[1;32m    233\u001b[0m     inputs,\n\u001b[1;32m    234\u001b[0m )\n\u001b[1;32m    235\u001b[0m \u001b[38;5;28;01mtry\u001b[39;00m:\n\u001b[1;32m    236\u001b[0m     outputs \u001b[38;5;241m=\u001b[39m (\n\u001b[0;32m--> 237\u001b[0m         \u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43m_call\u001b[49m\u001b[43m(\u001b[49m\u001b[43minputs\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mrun_manager\u001b[49m\u001b[38;5;241;43m=\u001b[39;49m\u001b[43mrun_manager\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    238\u001b[0m         \u001b[38;5;28;01mif\u001b[39;00m new_arg_supported\n\u001b[1;32m    239\u001b[0m         \u001b[38;5;28;01melse\u001b[39;00m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39m_call(inputs)\n\u001b[1;32m    240\u001b[0m     )\n\u001b[1;32m    241\u001b[0m \u001b[38;5;28;01mexcept\u001b[39;00m (\u001b[38;5;167;01mKeyboardInterrupt\u001b[39;00m, \u001b[38;5;167;01mException\u001b[39;00m) \u001b[38;5;28;01mas\u001b[39;00m e:\n\u001b[1;32m    242\u001b[0m     run_manager\u001b[38;5;241m.\u001b[39mon_chain_error(e)\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/langchain/chains/sql_database/base.py:181\u001b[0m, in \u001b[0;36mSQLDatabaseChain._call\u001b[0;34m(self, inputs, run_manager)\u001b[0m\n\u001b[1;32m    177\u001b[0m \u001b[38;5;28;01mexcept\u001b[39;00m \u001b[38;5;167;01mException\u001b[39;00m \u001b[38;5;28;01mas\u001b[39;00m exc:\n\u001b[1;32m    178\u001b[0m     \u001b[38;5;66;03m# Append intermediate steps to exception, to aid in logging and later\u001b[39;00m\n\u001b[1;32m    179\u001b[0m     \u001b[38;5;66;03m# improvement of few shot prompt seeds\u001b[39;00m\n\u001b[1;32m    180\u001b[0m     exc\u001b[38;5;241m.\u001b[39mintermediate_steps \u001b[38;5;241m=\u001b[39m intermediate_steps  \u001b[38;5;66;03m# type: ignore\u001b[39;00m\n\u001b[0;32m--> 181\u001b[0m     \u001b[38;5;28;01mraise\u001b[39;00m exc\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/langchain/chains/sql_database/base.py:126\u001b[0m, in \u001b[0;36mSQLDatabaseChain._call\u001b[0;34m(self, inputs, run_manager)\u001b[0m\n\u001b[1;32m    122\u001b[0m     intermediate_steps\u001b[38;5;241m.\u001b[39mappend(\n\u001b[1;32m    123\u001b[0m         sql_cmd\n\u001b[1;32m    124\u001b[0m     )  \u001b[38;5;66;03m# output: sql generation (no checker)\u001b[39;00m\n\u001b[1;32m    125\u001b[0m     intermediate_steps\u001b[38;5;241m.\u001b[39mappend({\u001b[38;5;124m\"\u001b[39m\u001b[38;5;124msql_cmd\u001b[39m\u001b[38;5;124m\"\u001b[39m: sql_cmd})  \u001b[38;5;66;03m# input: sql exec\u001b[39;00m\n\u001b[0;32m--> 126\u001b[0m     result \u001b[38;5;241m=\u001b[39m \u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mdatabase\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mrun\u001b[49m\u001b[43m(\u001b[49m\u001b[43msql_cmd\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    127\u001b[0m     intermediate_steps\u001b[38;5;241m.\u001b[39mappend(\u001b[38;5;28mstr\u001b[39m(result))  \u001b[38;5;66;03m# output: sql exec\u001b[39;00m\n\u001b[1;32m    128\u001b[0m \u001b[38;5;28;01melse\u001b[39;00m:\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/langchain/sql_database.py:390\u001b[0m, in \u001b[0;36mSQLDatabase.run\u001b[0;34m(self, command, fetch)\u001b[0m\n\u001b[1;32m    388\u001b[0m     \u001b[38;5;28;01melse\u001b[39;00m:\n\u001b[1;32m    389\u001b[0m         connection\u001b[38;5;241m.\u001b[39mexec_driver_sql(\u001b[38;5;124mf\u001b[39m\u001b[38;5;124m\"\u001b[39m\u001b[38;5;124mSET search_path TO \u001b[39m\u001b[38;5;132;01m{\u001b[39;00m\u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39m_schema\u001b[38;5;132;01m}\u001b[39;00m\u001b[38;5;124m\"\u001b[39m)\n\u001b[0;32m--> 390\u001b[0m cursor \u001b[38;5;241m=\u001b[39m \u001b[43mconnection\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mexecute\u001b[49m\u001b[43m(\u001b[49m\u001b[43mtext\u001b[49m\u001b[43m(\u001b[49m\u001b[43mcommand\u001b[49m\u001b[43m)\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    391\u001b[0m \u001b[38;5;28;01mif\u001b[39;00m cursor\u001b[38;5;241m.\u001b[39mreturns_rows:\n\u001b[1;32m    392\u001b[0m     \u001b[38;5;28;01mif\u001b[39;00m fetch \u001b[38;5;241m==\u001b[39m \u001b[38;5;124m\"\u001b[39m\u001b[38;5;124mall\u001b[39m\u001b[38;5;124m\"\u001b[39m:\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/engine/base.py:1385\u001b[0m, in \u001b[0;36mConnection.execute\u001b[0;34m(self, statement, *multiparams, **params)\u001b[0m\n\u001b[1;32m   1381\u001b[0m     util\u001b[38;5;241m.\u001b[39mraise_(\n\u001b[1;32m   1382\u001b[0m         exc\u001b[38;5;241m.\u001b[39mObjectNotExecutableError(statement), replace_context\u001b[38;5;241m=\u001b[39merr\n\u001b[1;32m   1383\u001b[0m     )\n\u001b[1;32m   1384\u001b[0m \u001b[38;5;28;01melse\u001b[39;00m:\n\u001b[0;32m-> 1385\u001b[0m     \u001b[38;5;28;01mreturn\u001b[39;00m \u001b[43mmeth\u001b[49m\u001b[43m(\u001b[49m\u001b[38;5;28;43mself\u001b[39;49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mmultiparams\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mparams\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43m_EMPTY_EXECUTION_OPTS\u001b[49m\u001b[43m)\u001b[49m\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/sql/elements.py:334\u001b[0m, in \u001b[0;36mClauseElement._execute_on_connection\u001b[0;34m(self, connection, multiparams, params, execution_options, _force)\u001b[0m\n\u001b[1;32m    330\u001b[0m \u001b[38;5;28;01mdef\u001b[39;00m \u001b[38;5;21m_execute_on_connection\u001b[39m(\n\u001b[1;32m    331\u001b[0m     \u001b[38;5;28mself\u001b[39m, connection, multiparams, params, execution_options, _force\u001b[38;5;241m=\u001b[39m\u001b[38;5;28;01mFalse\u001b[39;00m\n\u001b[1;32m    332\u001b[0m ):\n\u001b[1;32m    333\u001b[0m     \u001b[38;5;28;01mif\u001b[39;00m _force \u001b[38;5;129;01mor\u001b[39;00m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39msupports_execution:\n\u001b[0;32m--> 334\u001b[0m         \u001b[38;5;28;01mreturn\u001b[39;00m \u001b[43mconnection\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43m_execute_clauseelement\u001b[49m\u001b[43m(\u001b[49m\n\u001b[1;32m    335\u001b[0m \u001b[43m            \u001b[49m\u001b[38;5;28;43mself\u001b[39;49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mmultiparams\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mparams\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mexecution_options\u001b[49m\n\u001b[1;32m    336\u001b[0m \u001b[43m        \u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    337\u001b[0m     \u001b[38;5;28;01melse\u001b[39;00m:\n\u001b[1;32m    338\u001b[0m         \u001b[38;5;28;01mraise\u001b[39;00m exc\u001b[38;5;241m.\u001b[39mObjectNotExecutableError(\u001b[38;5;28mself\u001b[39m)\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/engine/base.py:1577\u001b[0m, in \u001b[0;36mConnection._execute_clauseelement\u001b[0;34m(self, elem, multiparams, params, execution_options)\u001b[0m\n\u001b[1;32m   1565\u001b[0m compiled_cache \u001b[38;5;241m=\u001b[39m execution_options\u001b[38;5;241m.\u001b[39mget(\n\u001b[1;32m   1566\u001b[0m     \u001b[38;5;124m\"\u001b[39m\u001b[38;5;124mcompiled_cache\u001b[39m\u001b[38;5;124m\"\u001b[39m, \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mengine\u001b[38;5;241m.\u001b[39m_compiled_cache\n\u001b[1;32m   1567\u001b[0m )\n\u001b[1;32m   1569\u001b[0m compiled_sql, extracted_params, cache_hit \u001b[38;5;241m=\u001b[39m elem\u001b[38;5;241m.\u001b[39m_compile_w_cache(\n\u001b[1;32m   1570\u001b[0m     dialect\u001b[38;5;241m=\u001b[39mdialect,\n\u001b[1;32m   1571\u001b[0m     compiled_cache\u001b[38;5;241m=\u001b[39mcompiled_cache,\n\u001b[0;32m   (...)\u001b[0m\n\u001b[1;32m   1575\u001b[0m     linting\u001b[38;5;241m=\u001b[39m\u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mdialect\u001b[38;5;241m.\u001b[39mcompiler_linting \u001b[38;5;241m|\u001b[39m compiler\u001b[38;5;241m.\u001b[39mWARN_LINTING,\n\u001b[1;32m   1576\u001b[0m )\n\u001b[0;32m-> 1577\u001b[0m ret \u001b[38;5;241m=\u001b[39m \u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43m_execute_context\u001b[49m\u001b[43m(\u001b[49m\n\u001b[1;32m   1578\u001b[0m \u001b[43m    \u001b[49m\u001b[43mdialect\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1579\u001b[0m \u001b[43m    \u001b[49m\u001b[43mdialect\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mexecution_ctx_cls\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43m_init_compiled\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1580\u001b[0m \u001b[43m    \u001b[49m\u001b[43mcompiled_sql\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1581\u001b[0m \u001b[43m    \u001b[49m\u001b[43mdistilled_params\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1582\u001b[0m \u001b[43m    \u001b[49m\u001b[43mexecution_options\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1583\u001b[0m \u001b[43m    \u001b[49m\u001b[43mcompiled_sql\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1584\u001b[0m \u001b[43m    \u001b[49m\u001b[43mdistilled_params\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1585\u001b[0m \u001b[43m    \u001b[49m\u001b[43melem\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1586\u001b[0m \u001b[43m    \u001b[49m\u001b[43mextracted_params\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1587\u001b[0m \u001b[43m    \u001b[49m\u001b[43mcache_hit\u001b[49m\u001b[38;5;241;43m=\u001b[39;49m\u001b[43mcache_hit\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m   1588\u001b[0m \u001b[43m\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m   1589\u001b[0m \u001b[38;5;28;01mif\u001b[39;00m has_events:\n\u001b[1;32m   1590\u001b[0m     \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mdispatch\u001b[38;5;241m.\u001b[39mafter_execute(\n\u001b[1;32m   1591\u001b[0m         \u001b[38;5;28mself\u001b[39m,\n\u001b[1;32m   1592\u001b[0m         elem,\n\u001b[0;32m   (...)\u001b[0m\n\u001b[1;32m   1596\u001b[0m         ret,\n\u001b[1;32m   1597\u001b[0m     )\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/engine/base.py:1953\u001b[0m, in \u001b[0;36mConnection._execute_context\u001b[0;34m(self, dialect, constructor, statement, parameters, execution_options, *args, **kw)\u001b[0m\n\u001b[1;32m   1950\u001b[0m             branched\u001b[38;5;241m.\u001b[39mclose()\n\u001b[1;32m   1952\u001b[0m \u001b[38;5;28;01mexcept\u001b[39;00m \u001b[38;5;167;01mBaseException\u001b[39;00m \u001b[38;5;28;01mas\u001b[39;00m e:\n\u001b[0;32m-> 1953\u001b[0m     \u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43m_handle_dbapi_exception\u001b[49m\u001b[43m(\u001b[49m\n\u001b[1;32m   1954\u001b[0m \u001b[43m        \u001b[49m\u001b[43me\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mstatement\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mparameters\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mcursor\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mcontext\u001b[49m\n\u001b[1;32m   1955\u001b[0m \u001b[43m    \u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m   1957\u001b[0m \u001b[38;5;28;01mreturn\u001b[39;00m result\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/engine/base.py:2134\u001b[0m, in \u001b[0;36mConnection._handle_dbapi_exception\u001b[0;34m(self, e, statement, parameters, cursor, context)\u001b[0m\n\u001b[1;32m   2132\u001b[0m     util\u001b[38;5;241m.\u001b[39mraise_(newraise, with_traceback\u001b[38;5;241m=\u001b[39mexc_info[\u001b[38;5;241m2\u001b[39m], from_\u001b[38;5;241m=\u001b[39me)\n\u001b[1;32m   2133\u001b[0m \u001b[38;5;28;01melif\u001b[39;00m should_wrap:\n\u001b[0;32m-> 2134\u001b[0m     \u001b[43mutil\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mraise_\u001b[49m\u001b[43m(\u001b[49m\n\u001b[1;32m   2135\u001b[0m \u001b[43m        \u001b[49m\u001b[43msqlalchemy_exception\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mwith_traceback\u001b[49m\u001b[38;5;241;43m=\u001b[39;49m\u001b[43mexc_info\u001b[49m\u001b[43m[\u001b[49m\u001b[38;5;241;43m2\u001b[39;49m\u001b[43m]\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mfrom_\u001b[49m\u001b[38;5;241;43m=\u001b[39;49m\u001b[43me\u001b[49m\n\u001b[1;32m   2136\u001b[0m \u001b[43m    \u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m   2137\u001b[0m \u001b[38;5;28;01melse\u001b[39;00m:\n\u001b[1;32m   2138\u001b[0m     util\u001b[38;5;241m.\u001b[39mraise_(exc_info[\u001b[38;5;241m1\u001b[39m], with_traceback\u001b[38;5;241m=\u001b[39mexc_info[\u001b[38;5;241m2\u001b[39m])\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/util/compat.py:211\u001b[0m, in \u001b[0;36mraise_\u001b[0;34m(***failed resolving arguments***)\u001b[0m\n\u001b[1;32m    208\u001b[0m     exception\u001b[38;5;241m.\u001b[39m__cause__ \u001b[38;5;241m=\u001b[39m replace_context\n\u001b[1;32m    210\u001b[0m \u001b[38;5;28;01mtry\u001b[39;00m:\n\u001b[0;32m--> 211\u001b[0m     \u001b[38;5;28;01mraise\u001b[39;00m exception\n\u001b[1;32m    212\u001b[0m \u001b[38;5;28;01mfinally\u001b[39;00m:\n\u001b[1;32m    213\u001b[0m     \u001b[38;5;66;03m# credit to\u001b[39;00m\n\u001b[1;32m    214\u001b[0m     \u001b[38;5;66;03m# https://cosmicpercolator.com/2016/01/13/exception-leaks-in-python-2-and-3/\u001b[39;00m\n\u001b[1;32m    215\u001b[0m     \u001b[38;5;66;03m# as the __traceback__ object creates a cycle\u001b[39;00m\n\u001b[1;32m    216\u001b[0m     \u001b[38;5;28;01mdel\u001b[39;00m exception, replace_context, from_, with_traceback\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/engine/base.py:1910\u001b[0m, in \u001b[0;36mConnection._execute_context\u001b[0;34m(self, dialect, constructor, statement, parameters, execution_options, *args, **kw)\u001b[0m\n\u001b[1;32m   1908\u001b[0m                 \u001b[38;5;28;01mbreak\u001b[39;00m\n\u001b[1;32m   1909\u001b[0m     \u001b[38;5;28;01mif\u001b[39;00m \u001b[38;5;129;01mnot\u001b[39;00m evt_handled:\n\u001b[0;32m-> 1910\u001b[0m         \u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mdialect\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mdo_execute\u001b[49m\u001b[43m(\u001b[49m\n\u001b[1;32m   1911\u001b[0m \u001b[43m            \u001b[49m\u001b[43mcursor\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mstatement\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mparameters\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mcontext\u001b[49m\n\u001b[1;32m   1912\u001b[0m \u001b[43m        \u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m   1914\u001b[0m \u001b[38;5;28;01mif\u001b[39;00m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39m_has_events \u001b[38;5;129;01mor\u001b[39;00m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mengine\u001b[38;5;241m.\u001b[39m_has_events:\n\u001b[1;32m   1915\u001b[0m     \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mdispatch\u001b[38;5;241m.\u001b[39mafter_cursor_execute(\n\u001b[1;32m   1916\u001b[0m         \u001b[38;5;28mself\u001b[39m,\n\u001b[1;32m   1917\u001b[0m         cursor,\n\u001b[0;32m   (...)\u001b[0m\n\u001b[1;32m   1921\u001b[0m         context\u001b[38;5;241m.\u001b[39mexecutemany,\n\u001b[1;32m   1922\u001b[0m     )\n",
+            "File \u001b[0;32m/anaconda/envs/azureml_py310_sdkv2/lib/python3.10/site-packages/sqlalchemy/engine/default.py:736\u001b[0m, in \u001b[0;36mDefaultDialect.do_execute\u001b[0;34m(self, cursor, statement, parameters, context)\u001b[0m\n\u001b[1;32m    735\u001b[0m \u001b[38;5;28;01mdef\u001b[39;00m \u001b[38;5;21mdo_execute\u001b[39m(\u001b[38;5;28mself\u001b[39m, cursor, statement, parameters, context\u001b[38;5;241m=\u001b[39m\u001b[38;5;28;01mNone\u001b[39;00m):\n\u001b[0;32m--> 736\u001b[0m     \u001b[43mcursor\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mexecute\u001b[49m\u001b[43m(\u001b[49m\u001b[43mstatement\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mparameters\u001b[49m\u001b[43m)\u001b[49m\n",
+            "\u001b[0;31mProgrammingError\u001b[0m: (pyodbc.ProgrammingError) ('42S02', \"[42S02] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]Invalid object name 'msx.accounts'. (208) (SQLExecDirectW)\")\n[SQL: SELECT COUNT(*) as 'California', (SELECT COUNT(*) FROM [msx].[accounts] WHERE Vertical = 'Oil & Gas') as 'Nationwide' FROM [msx].[accounts] WHERE Vertical = 'Oil & Gas' AND AddressState = 'California']\n(Background on this error at: https://sqlalche.me/e/14/f405)"
+          ]
+        }
+      ],
+      "execution_count": 26,
+      "metadata": {
+        "gather": {
+          "logged": 1693760579702
+        }
+      },
+      "id": "16c2b905-64b8-4fdc-8fc8-7c0274ec6a43"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### To use or not use Agents"
+      ],
+      "metadata": {},
+      "id": "95052aba-d0c5-4883-a0b6-70c20e236b6a"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "As you can see above we achieved our goal of Question->SQL without using an Agent, we did it just by using a clever prompt. (If you want to see the different kind of prompts templates that come with langchain for sql chain, you can check it out [HERE](https://github.com/hwchase17/langchain/blob/master/langchain/chains/sql_database/prompt.py)). **So the question is, why do we need an Agent then?**\n",
+        "\n",
+        "**This is why**: As we explained on the prior Notebook, an agent is a process in which the LLM self-asks about what approach and steps to take, questions the validity of the results and if sure, provides the answer. The SQLDatabaseChain doesn't do all this analysis, but instead tries a one-shot query in order to answer the question, which is good! but not enough for complex questions. That's why it couldn't solve the part about nationwide, it needs multiple steps in order to solve the problem, one query is not enough.\n",
+        "Notice that it did't pay atention to the prompt where we explicitly say to try two methods and reflect on the answer."
+      ],
+      "metadata": {},
+      "id": "564867d7-f261-4e4c-99d3-37cf4e5c5000"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Let's use an agent now and see how ReAct framework solves the problem."
+      ],
+      "metadata": {},
+      "id": "eb8b1352-d6d7-4319-a0b8-ae7b9c2fd234"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "toolkit = SQLDatabaseToolkit(db=db, llm=llm)\n",
+        "\n",
+        "agent_executor = create_sql_agent(\n",
+        "    prefix=MSSQL_AGENT_PREFIX,\n",
+        "    format_instructions = MSSQL_AGENT_FORMAT_INSTRUCTIONS,\n",
+        "    llm=llm,\n",
+        "    toolkit=toolkit,\n",
+        "    top_k=30,\n",
+        "    verbose=True\n",
+        ")"
+      ],
+      "outputs": [],
+      "execution_count": 27,
+      "metadata": {
+        "gather": {
+          "logged": 1693760581903
+        }
+      },
+      "id": "2b51fb36-68b5-4770-b5f1-c042a08e0a0f"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# As we know by now, Agents use expert/tools. Let's see which are the tools for this SQL Agent\n",
+        "agent_executor.agent.allowed_tools"
+      ],
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "execution_count": 28,
+          "data": {
+            "text/plain": "['sql_db_query', 'sql_db_schema', 'sql_db_list_tables', 'sql_db_query_checker']"
+          },
+          "metadata": {}
+        }
+      ],
+      "execution_count": 28,
+      "metadata": {
+        "gather": {
+          "logged": 1693760583999
+        }
+      },
+      "id": "21c6c6f5-4a14-403f-a1d0-fe6b0c34a563"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# And let's see now our clever crafted prompt\n",
+        "printmd(agent_executor.agent.llm_chain.prompt.template)"
+      ],
+      "outputs": [
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": "<IPython.core.display.Markdown object>",
+            "text/markdown": "\n\nYou are an agent designed to interact with a SQL database.\n## Instructions:\n- Given an input question, create a syntactically correct mssql query to run, then look at the results of the query and return the answer.\n- Unless the user specifies a specific number of examples they wish to obtain, **ALWAYS** limit your query to at most 30 results.\n- You can order the results by a relevant column to return the most interesting examples in the database.\n- Never query for all the columns from a specific table, only ask for the relevant columns given the question.\n- You have access to tools for interacting with the database.\n- You MUST double check your query before executing it. If you get an error while executing a query, rewrite the query and try again.\n- DO NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.) to the database.\n- DO NOT MAKE UP AN ANSWER OR USE PRIOR KNOWLEDGE, ONLY USE THE RESULTS OF THE CALCULATIONS YOU HAVE DONE. \n- Your response should be in Markdown. However, **when running  a SQL Query  in \"Action Input\", do not include the markdown backticks**. Those are only for formatting the response, not for executing the command.\n- ALWAYS, as part of your final answer, explain how you got to the answer on a section that starts with: \"Explanation:\". Include the SQL query as part of the explanation section.\n- If the question does not seem related to the database, just return \"I don't know\" as the answer.\n- Only use the below tools. Only use the information returned by the below tools to construct your final answer.\n\n## Tools:\n\n\n\nsql_db_query: Input to this tool is a detailed and correct SQL query, output is a result from the database. If the query is not correct, an error message will be returned. If an error is returned, rewrite the query, check the query, and try again. If you encounter an issue with Unknown column 'xxxx' in 'field list', using schema_sql_db to query the correct table fields.\nsql_db_schema: Input to this tool is a comma-separated list of tables, output is the schema and sample rows for those tables. Be sure that the tables actually exist by calling list_tables_sql_db first! Example Input: 'table1, table2, table3'\nsql_db_list_tables: Input is an empty string, output is a comma separated list of tables in the database.\nsql_db_query_checker: \n    Use this tool to double check if your query is correct before executing it.\n    Always use this tool before executing a query with query_sql_db!\n    \n\n\n\n## Use the following format:\n\nQuestion: the input question you must answer. \nThought: you should always think about what to do. \nAction: the action to take, should be one of [sql_db_query, sql_db_schema, sql_db_list_tables, sql_db_query_checker]. \nAction Input: the input to the action. \nObservation: the result of the action. \n... (this Thought/Action/Action Input/Observation can repeat N times)\nThought: I now know the final answer. \nFinal Answer: the final answer to the original input question. \n\nExample of Final Answer:\n<=== Beginning of example\n\nAction: query_sql_db\nAction Input: SELECT account_name  FROM [msx].[accounts] where Vertical = 'Automotive & Mobility' and AddressState = 'Texas'\nObservation: [(SEWELL VILLAGE CADILLAC INC),(PARK PLACE MOTORS),(Velasco 495 Automotive),(TRIUMPH SSB)]\nThought:I now know the final answer\nFinal Answer: There 4 accounts of Automotive & Mobility vertical in Texas state.\n\nExplanation:\nI queried the msx.[accounts] table for account_name column where the AddressState is 'Texas' and Vertical is 'Automotive & Mobility' . The query returned a list of tuples with account names. To answer the question, I took the sum of all the account names in the list, which is 4. \nI used the following query\n\n```sql\nSELECT account_name  FROM [msx].[accounts] where Vertical = 'Automotive & Mobility' and AddressState = 'Texas'\n```\n===> End of Example\n\n\n\nBegin!\n\nQuestion: {input}\nThought: I should look at the tables in the database to see what I can query.  Then I should query the schema of the most relevant tables.\n{agent_scratchpad}"
+          },
+          "metadata": {}
+        }
+      ],
+      "execution_count": 29,
+      "metadata": {
+        "gather": {
+          "logged": 1693760585555
+        }
+      },
+      "id": "1cae3488-5334-4fbb-ab97-a710af07f966"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "for i in range(2):\n",
+        "    try:\n",
+        "        response = agent_executor.run(QUESTION) \n",
+        "        break\n",
+        "    except Exception as e:\n",
+        "        response = str(e)\n",
+        "        continue"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "\n\n\u001b[1m> Entering new  chain...\u001b[0m\n\u001b[32;1m\u001b[1;3mAction: sql_db_list_tables\nAction Input: \u001b[0m\nObservation: \u001b[38;5;200m\u001b[1;3mBuildVersion, ErrorLog, gptsearch_covidtracking, msx_accounts, msx_opportunities\u001b[0m\nThought:\u001b[32;1m\u001b[1;3mI should query the msx_accounts table to get the account names and their vertical and state information.\nAction: sql_db_query_checker\nAction Input: SELECT COUNT(*) FROM msx_accounts WHERE Vertical = 'Oil & Gas' AND AddressState = 'California'\u001b[0m\nObservation: \u001b[36;1m\u001b[1;3mThe original query appears to be correct:\n\nSELECT COUNT(*) FROM msx_accounts WHERE Vertical = 'Oil & Gas' AND AddressState = 'California'\u001b[0m\nThought:\u001b[32;1m\u001b[1;3mI should now execute the query to get the number of accounts of Oil & Gas Vertical in California state.\nAction: sql_db_query\nAction Input: SELECT COUNT(*) FROM msx_accounts WHERE Vertical = 'Oil & Gas' AND AddressState = 'California'\u001b[0m\nObservation: \u001b[36;1m\u001b[1;3m[(5,)]\u001b[0m\nThought:\u001b[32;1m\u001b[1;3mI need to add the number of accounts of Oil & Gas Vertical in all states to the number of accounts in California state to get the total number of accounts nationwide.\nAction: sql_db_query\nAction Input: SELECT COUNT(*) FROM msx_accounts WHERE Vertical = 'Oil & Gas'\u001b[0m\nObservation: \u001b[36;1m\u001b[1;3m[(95,)]\u001b[0m\nThought:\u001b[32;1m\u001b[1;3mI now know the final answer.\nFinal Answer: There are 5 accounts of Oil & Gas Vertical in California state and 95 accounts of Oil & Gas Vertical nationwide.\u001b[0m\n\n\u001b[1m> Finished chain.\u001b[0m\n"
+        }
+      ],
+      "execution_count": 30,
+      "metadata": {
+        "gather": {
+          "logged": 1693760591968
+        }
+      },
+      "id": "6d7bb8cf-8661-4174-8185-c64b4b20670d"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "printmd(response)"
+      ],
+      "outputs": [
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": "<IPython.core.display.Markdown object>",
+            "text/markdown": "There are 5 accounts of Oil & Gas Vertical in California state and 95 accounts of Oil & Gas Vertical nationwide."
+          },
+          "metadata": {}
+        }
+      ],
+      "execution_count": 31,
+      "metadata": {
+        "gather": {
+          "logged": 1693760597666
+        }
+      },
+      "id": "f23d2135-2199-474e-ae83-455aefc9b93b"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "This answer is way better than only using the SQL Chain\n",
+        "\n",
+        "**IMPORTANT NOTE**: Runing the above cell multiple times still will yield diferent results some times. <br>\n",
+        "The reason is:\n",
+        "The column names are ambiguous, hence it is hard even for Humans to discern what are the right columns to use"
+      ],
+      "metadata": {},
+      "id": "cfef208f-321c-490e-a50e-e92602daf125"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Summary"
+      ],
+      "metadata": {},
+      "id": "56cbc405-26e2-471e-9626-2a0df07f5ddc"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "In this notebook, we achieved our goal of Asking a Question in natural language to a dataset located on a SQL Database.  We did this by using purely prompt engineering (Langchain does it for us) and the cognitive power of GPT-4.\n",
+        "\n",
+        "This process shows why it is NOT necessary to move the data from its original source as long as the source has an API and a common language we can use to interface with. GPT-4 has been trained on the whole public Github corpus, so it can pretty much understand most of the coding and database query languages that exists out there. "
+      ],
+      "metadata": {},
+      "id": "7381ea5f-7269-4e1f-8b0c-1e2c04bd84c0"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# NEXT\n",
+        "\n",
+        "The Next Notebook will show you how to create a custom REACT agent that connects to the internet using BING SEARCH API to answer questions grounded on search results with citations. Basically a clone of Bing Chat."
+      ],
+      "metadata": {},
+      "id": "02073623-91b4-40d6-8eaf-cb6d9c6a7a9a"
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "name": "python310-sdkv2",
+      "language": "python",
+      "display_name": "Python 3.10 - SDK v2"
+    },
+    "language_info": {
+      "name": "python",
+      "version": "3.10.11",
+      "mimetype": "text/x-python",
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "pygments_lexer": "ipython3",
+      "nbconvert_exporter": "python",
+      "file_extension": ".py"
+    },
+    "microsoft": {
+      "ms_spell_check": {
+        "ms_spell_check_language": "en"
+      },
+      "host": {
+        "AzureML": {
+          "notebookHasBeenCompleted": true
+        }
+      }
+    },
+    "kernel_info": {
+      "name": "python310-sdkv2"
+    },
+    "nteract": {
+      "version": "nteract-front-end@1.0.0"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
