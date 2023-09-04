@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Awaitable, Callable, Tuple, Type, 
 import requests
 import os
 from collections import OrderedDict
-
+import pandas as pd
 import docx2txt
 import tiktoken
 
@@ -19,6 +19,7 @@ from langchain.vectorstores.faiss import FAISS
 from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
 from langchain.agents import create_csv_agent
+#from langchain.agents import create_pandas_dataframe_agent
 from langchain.chains.question_answering import load_qa_chain
 from langchain.chains.qa_with_sources import load_qa_with_sources_chain
 from langchain.chains import ConversationalRetrievalChain
@@ -37,6 +38,7 @@ from langchain.utilities import BingSearchAPIWrapper
 from langchain.agents import create_sql_agent
 from langchain.agents.agent_toolkits import SQLDatabaseToolkit
 from langchain.callbacks.base import BaseCallbackManager
+
 
 try:
     from .prompts import (COMBINE_QUESTION_PROMPT, COMBINE_PROMPT, COMBINE_CHAT_PROMPT,
@@ -420,7 +422,41 @@ class CSVTabularTool(BaseTool):
     async def _arun(self, query: str) -> str:
         """Use the tool asynchronously."""
         raise NotImplementedError("CSVTabularTool does not support async")
+
+# class PandasTabularTool(BaseTool):
+#     """Tool Pandas agent"""
+    
+#     name = "@remote_file_path_with_token"
+#     description = "useful when the questions includes the term: @remote_file_path_with_token with SAS token.\n"
+
+#     path: str
+#     llm: AzureChatOpenAI
+    
+#     def _run(self, query: str) -> str:
         
+#         try:
+#             df = pd.read_csv(self.path)
+#             print("No. of lines:",df.shape[0])            
+#             agent = create_pandas_dataframe_agent(llm=self.llm,df=df,verbose=self.verbose)
+#             #create_csv_agent(self.llm, self.path, verbose=self.verbose, callback_manager=self.callbacks)
+#             for i in range(5):
+#                 try:
+#                     response = agent.run(CSV_PROMPT_PREFIX + query + CSV_PROMPT_SUFFIX) 
+#                     break
+#                 except:
+#                     response = "Error too many failed retries"
+#                     continue
+
+#             return response
+#         except Exception as e:
+#             print(e)
+#             response = e
+#             return response
+    
+#     async def _arun(self, query: str) -> str:
+#         """Use the tool asynchronously."""
+#         raise NotImplementedError("CSVTabularTool does not support async")
+
         
 class SQLDbTool(BaseTool):
     """Tool SQLDB Agent"""
