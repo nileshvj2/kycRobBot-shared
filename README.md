@@ -11,9 +11,14 @@ Use Case:
 
 ![Hack-Idea](https://github.com/nileshvj2/kycRobBot/assets/111443992/42a9337c-ad72-44fb-8fe7-203495242e76)
 
+Solution: 
+![image](https://github.com/nileshvj2/kycRobBot/assets/111443992/e61b835e-954a-4926-8204-cdf0378e8686)
 
-![image](https://github.com/nileshvj2/kycRobBot/assets/111443992/e9378440-b442-4ccf-a53e-b86c3e454d1d)
+Technical Design:
+![image](https://github.com/nileshvj2/kycRobBot/assets/111443992/50d33322-af03-4414-a53e-c369240a14c0)
 
-Architecture Diagram: 
-![image](https://github.com/nileshvj2/kycRobBot/assets/111443992/e09cbbe4-2f07-4ba5-81d5-42d358849fc9)
+Chat/exmples: 
+![image](https://github.com/nileshvj2/kycRobBot/assets/111443992/fb5cda73-d3fb-4882-b992-f50cf6ada021)
+
+
 
