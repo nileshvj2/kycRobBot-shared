@@ -1,4 +1,4 @@
-                                             KYC SmartBOT (Rob.ai)
+                                             KYC SmartBOT (aka Rob)
 
 This is Know Your Customer BOT - created based on how different teams work together through MCEM stages.
 This BOT is going to help coordinate between different MSFT teams to get all information about customers.
